@@ -1,8 +1,17 @@
 document.addEventListener('DOMContentLoaded', async () => {
     const gridContainer = document.getElementById('photo-grid-container');
+    const zapFilterCheckbox = document.getElementById('zap-filter');
+    const bitcoinFilterToggle = document.getElementById('bitcoin-filter-toggle'); // Get Bitcoin filter toggle
+
     if (!gridContainer) {
         console.error('Grid container not found!');
         return;
+    }
+    if (!zapFilterCheckbox) {
+        console.warn('Zap filter checkbox not found! Zap filtering may not work.');
+    }
+    if (!bitcoinFilterToggle) {
+        console.warn('Bitcoin filter toggle not found! Bitcoin filtering may not work.');
     }
 
     if (!window.NostrTools) {
@@ -11,21 +20,26 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
     }
 
-    const { SimplePool, nip19 } = window.NostrTools;
+    const { SimplePool, nip19, utils } = window.NostrTools;
 
     const relays = [
         'wss://relay.damus.io',
         'wss://relay.primal.net',
         'wss://nos.lol',
         'wss://nostr.wine',
-        'wss://relay.nostr.band' // Added another relay
+        'wss://relay.nostr.band'
     ];
 
-    const pool = new SimplePool({ eoseSubTimeout: 10000 }); // Added timeout for EOSE
+    const pool = new SimplePool({ eoseSubTimeout: 10000 });
     const metadataCache = new Map();
     let isLoadingMore = false;
     let oldestTimestamp = Math.floor(Date.now() / 1000);
-    let allLoadedEvents = new Set(); // To keep track of loaded event IDs and prevent duplicates
+    let allLoadedEvents = new Set();
+    
+    let zapFilterActive = false; 
+    const MIN_ZAP_AMOUNT_SATS = 1; 
+
+    let bitcoinFilterActive = false; // Bitcoin filter state
 
     function isValidImageUrl(url) {
         if (!url || typeof url !== 'string') return false;
@@ -53,132 +67,198 @@ document.addEventListener('DOMContentLoaded', async () => {
         return null;
     }
 
-    function createPostCard(post) {
+    function checkZapAmountsForNote(noteId, zapEventsForNote, minAmountMillisats) {
+        if (!zapEventsForNote || zapEventsForNote.length === 0) {
+            return false;
+        }
+        for (const zapEvent of zapEventsForNote) {
+            const amountTag = zapEvent.tags.find(tag => tag[0] === 'amount');
+            if (amountTag && amountTag[1]) {
+                const amountMillisats = parseInt(amountTag[1], 10);
+                if (!isNaN(amountMillisats) && amountMillisats >= minAmountMillisats) {
+                    return true; 
+                }
+            }
+        }
+        return false; 
+    }
+
+    function createPostCard(post) { 
         const card = document.createElement('div');
         card.className = 'post-card';
+        if (post.hasMinimumZap) {
+            card.dataset.hasZaps = 'true';
+        }
+        if (post.isBitcoinPost) { // Ensure this attribute is set
+            card.dataset.isBitcoin = 'true';
+        }
+
+        const imageLink = document.createElement('a');
+        try {
+            const nEvent = nip19.neventEncode({ id: post.noteId, relays: relays.slice(0,2) });
+            imageLink.href = `https://primal.net/e/${nEvent}`;
+        } catch (e) {
+            console.warn("Error encoding noteId for primal link:", post.noteId, e);
+            imageLink.href = `https://primal.net/e/${post.noteId}`;
+        }
+        imageLink.target = '_blank'; 
+        imageLink.rel = 'noopener noreferrer';
 
         const img = document.createElement('img');
-        img.className = 'main-image';
+        img.className = 'main-image'; 
         img.src = post.imageUrl;
         img.alt = 'Nostr Post Image';
         img.onerror = () => {
             img.alt = 'Image failed to load';
             card.style.display = 'none'; 
         };
+        imageLink.appendChild(img);
+
+        const imageContainer = document.createElement('div');
+        imageContainer.className = 'main-image-container';
+        imageContainer.appendChild(imageLink); // imageLink now goes into imageContainer
 
         const contentDiv = document.createElement('div');
-        contentDiv.className = 'content';
+        contentDiv.className = 'content'; 
 
         const textP = document.createElement('p');
         textP.className = 'text-content';
         textP.textContent = post.text.length > 150 ? post.text.substring(0, 147) + '...' : post.text;
-
         contentDiv.appendChild(textP);
-
+        
         const publisherDiv = document.createElement('div');
         publisherDiv.className = 'publisher-info';
-
-        const iconImg = document.createElement('img');
-        iconImg.className = 'icon';
-        iconImg.src = post.publisherIconUrl || 'https://via.placeholder.com/30.png?text=N';
-        iconImg.alt = post.publisherName || 'Unknown';
-        iconImg.onerror = () => {
-            iconImg.src = 'https://via.placeholder.com/30.png?text=N';
-            iconImg.alt = 'Icon load error';
-        };
-
         const nameSpan = document.createElement('span');
         nameSpan.className = 'name';
         nameSpan.textContent = post.publisherName || (post.publisherNpub ? post.publisherNpub.substring(0, 10) + '...' : 'Anonymous');
-
-        publisherDiv.appendChild(iconImg);
         publisherDiv.appendChild(nameSpan);
 
-        card.appendChild(img);
-        card.appendChild(contentDiv);
-        card.appendChild(publisherDiv);
+        card.appendChild(imageContainer); // imageContainer is appended to card
+        card.appendChild(contentDiv); 
+        card.appendChild(publisherDiv); 
 
         return card;
     }
 
-    async function fetchMetadata(pubkey) {
-        if (metadataCache.has(pubkey)) {
-            return metadataCache.get(pubkey);
-        }
+    async function fetchMetadata(pubkeysToFetch) {
+        if (pubkeysToFetch.length === 0) return;
+        const newPubkeys = pubkeysToFetch.filter(pk => !metadataCache.has(pk) || metadataCache.get(pk)?.pending);
+        if (newPubkeys.length === 0) return;
+        newPubkeys.forEach(pk => metadataCache.set(pk, { pending: true }));
         try {
-            // Only fetch if not in cache to avoid console errors on multiple quick requests for same new pubkey
-            if (!pool.subs.some(sub => sub.filters && sub.filters.some(f => f.authors && f.authors.includes(pubkey) && f.kinds && f.kinds.includes(0)))) {
-                 const metadataEvent = await pool.get(relays, { kinds: [0], authors: [pubkey] });
-                 if (metadataEvent) {
-                    const metadata = JSON.parse(metadataEvent.content);
-                    metadataCache.set(pubkey, metadata);
-                    return metadata;
+            const metadataEvents = await pool.list(relays, [{ kinds: [0], authors: newPubkeys }]);
+            metadataEvents.forEach(event => {
+                try {
+                    const metadata = JSON.parse(event.content);
+                    metadataCache.set(event.pubkey, metadata);
+                } catch (e) {
+                    console.warn("Failed to parse metadata JSON for pubkey " + event.pubkey + ":", event.content, e);
+                    metadataCache.set(event.pubkey, { error: "Failed to parse" });
                 }
-            }
+            });
         } catch (error) {
-            // console.warn(`Failed to fetch metadata for ${pubkey}:`, error); // Less noisy
+            console.error("Failed to fetch metadata for new pubkeys:", error);
+            newPubkeys.forEach(pk => metadataCache.set(pk, { error: "Fetch failed" }));
         }
-        return null; // Return null if not found or error
     }
     
     let initialLoadComplete = false;
+    let statusMessageElement = null; 
+    const statusMessageContainer = document.getElementById('loading-indicator-container');
 
     async function loadMorePosts(isInitialLoad = false) {
         if (isLoadingMore) return;
         isLoadingMore = true;
-
-        if (isInitialLoad) {
-            gridContainer.innerHTML = '<p>Loading initial posts...</p>';
-            allLoadedEvents.clear(); // Clear for a fresh load
-        } else {
-            // Optional: Add a small loading indicator at the bottom
-            let loadingIndicator = document.getElementById('loading-indicator');
-            if (!loadingIndicator) {
-                loadingIndicator = document.createElement('p');
-                loadingIndicator.id = 'loading-indicator';
-                loadingIndicator.textContent = 'Loading more posts...';
-                gridContainer.insertAdjacentElement('afterend', loadingIndicator);
-            }
-            loadingIndicator.style.display = 'block';
+        
+        if (!statusMessageElement && statusMessageContainer) {
+            statusMessageElement = document.createElement('p');
+            statusMessageElement.id = 'status-message';
+            statusMessageContainer.appendChild(statusMessageElement);
+        } else if (!statusMessageElement && !statusMessageContainer && isInitialLoad) {
+            statusMessageElement = document.createElement('p');
+            statusMessageElement.id = 'status-message';
+            gridContainer.insertAdjacentElement('beforebegin', statusMessageElement);
         }
 
-        const limit = isInitialLoad ? 40 : 20; // Fetch more on initial load to ensure we get enough with images
-        const currentOldestTimestamp = oldestTimestamp; // Capture timestamp before new fetch
+        if (isInitialLoad) {
+            gridContainer.innerHTML = ''; 
+            if(statusMessageElement) statusMessageElement.textContent = 'Loading initial posts...';
+            allLoadedEvents.clear();
+        } else {
+            if(statusMessageElement) statusMessageElement.textContent = 'Loading more posts...';
+        }
+        if(statusMessageElement) statusMessageElement.style.display = 'block';
+
+        const limit = isInitialLoad ? 40 : 20;
+        const currentOldestTimestamp = oldestTimestamp;
 
         try {
-            const events = await pool.list(relays, [{ kinds: [1], limit: limit, until: currentOldestTimestamp }]);
+            const noteEvents = await pool.list(relays, [{ kinds: [1], limit: limit, until: currentOldestTimestamp }]);
             
-            if (isInitialLoad && events.length === 0) {
-                 gridContainer.innerHTML = '<p>No posts found. Try different relays or check back later.</p>';
+            if (isInitialLoad && noteEvents.length === 0 ) {
+                 if(statusMessageElement) statusMessageElement.textContent = 'No posts found. Try different relays or check back later.';
                  isLoadingMore = false;
-                 return;
+                 return; 
             }
-            if (isInitialLoad) {
-                gridContainer.innerHTML = ''; // Clear "Loading initial posts..."
+            
+            if (statusMessageElement && (noteEvents.length > 0 || !isInitialLoad) ) {
+                 statusMessageElement.textContent = ''; 
+                 statusMessageElement.style.display = 'none'; 
             }
+
+            const noteIds = noteEvents.map(event => event.id);
+            let zapEventsMap = new Map(); 
+
+            if (noteIds.length > 0) {
+                const zapReceiptEvents = await pool.list(relays, [{ kinds: [9735], "#e": noteIds }]);
+                zapReceiptEvents.forEach(zapEvent => {
+                    const zappedNoteIdTag = zapEvent.tags.find(tag => tag[0] === 'e' && tag[1] && noteIds.includes(tag[1]));
+                    if (zappedNoteIdTag) {
+                        const zappedNoteId = zappedNoteIdTag[1];
+                        if (!zapEventsMap.has(zappedNoteId)) {
+                            zapEventsMap.set(zappedNoteId, []);
+                        }
+                        zapEventsMap.get(zappedNoteId).push(zapEvent);
+                    }
+                });
+            }
+            
+            const pubkeysToFetch = [...new Set(noteEvents.map(event => event.pubkey).filter(pk => !metadataCache.has(pk) || metadataCache.get(pk)?.pending))];
+            await fetchMetadata(pubkeysToFetch);
 
             let postsAddedInBatch = 0;
             let tempOldestInBatch = currentOldestTimestamp;
 
-            for (const event of events) {
-                if (allLoadedEvents.has(event.id)) continue; // Skip duplicates
+            for (const event of noteEvents) {
+                if (allLoadedEvents.has(event.id)) continue;
 
                 const imageUrl = extractImageUrlFromContent(event.content);
                 if (imageUrl) {
-                    const metadata = await fetchMetadata(event.pubkey);
+                    const metadata = metadataCache.get(event.pubkey);
                     const publisherNpub = nip19.npubEncode(event.pubkey);
+                    const zapsForThisNote = zapEventsMap.get(event.id) || [];
+                    const hasMinZap = checkZapAmountsForNote(event.id, zapsForThisNote, MIN_ZAP_AMOUNT_SATS * 1000);
+                    
+                    // Bitcoin related check
+                    const contentLowerCase = event.content ? event.content.toLowerCase() : "";
+                    const tags = event.tags || [];
+                    const isBitcoinRelated = contentLowerCase.includes('bitcoin') || 
+                                             contentLowerCase.includes('#bitcoin') || 
+                                             tags.some(tag => tag[0] === 't' && tag[1] && tag[1].toLowerCase() === 'bitcoin');
 
                     const postData = {
+                        noteId: event.id, 
                         imageUrl: imageUrl,
                         text: event.content.replace(/!\[.*?\]\(.*?\)|(https?:\/\/[^\s]+)/g, '').trim(),
                         publisherName: metadata?.name || metadata?.display_name || metadata?.username,
-                        publisherIconUrl: metadata?.picture,
-                        publisherNpub: publisherNpub
+                        publisherNpub: publisherNpub,
+                        hasMinimumZap: hasMinZap, 
+                        isBitcoinPost: isBitcoinRelated // Store bitcoin status
                     };
-
+                    
                     const postElement = createPostCard(postData);
                     if (postElement) {
-                       gridContainer.appendChild(postElement);
+                       gridContainer.appendChild(postElement); 
                        postsAddedInBatch++;
                        allLoadedEvents.add(event.id);
                     }
@@ -188,47 +268,70 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
             
-            // Update global oldestTimestamp only if we actually processed events from this batch
-            if (events.length > 0) {
+            if (noteEvents.length > 0) {
                 oldestTimestamp = tempOldestInBatch;
             }
 
-            if (isInitialLoad && postsAddedInBatch === 0) {
-                gridContainer.innerHTML = '<p>No posts with images found in recent notes. Scroll down to try loading older ones or try again later.</p>';
+            if (isInitialLoad && postsAddedInBatch === 0 && statusMessageElement) {
+                 statusMessageElement.textContent = 'No posts with images found in recent notes. Scroll to load older or try filters.';
+                 statusMessageElement.style.display = 'block';
             }
             
-            if (!isInitialLoad && postsAddedInBatch === 0 && events.length > 0) {
-                // Fetched events, but none had images. Try fetching even older ones.
-                console.log("No new image posts in this batch, trying older...");
-                isLoadingMore = false; // Allow immediate re-fetch
-                // To prevent infinite loops if there are truly no more image posts, add a counter or a delay.
-                // For now, just allowing it for one more quick try.
-                if (document.documentElement.scrollHeight <= window.innerHeight) { // If no scrollbar, try to fill
-                    loadMorePosts(false);
-                }
-            }
-
-
         } catch (error) {
             console.error("Error loading posts:", error);
-            if (isInitialLoad) {
-                gridContainer.innerHTML = '<p style="color:red;">Error loading posts. Check console.</p>';
+            if (statusMessageElement) {
+                statusMessageElement.textContent = 'Error loading posts. Check console.';
+                statusMessageElement.style.color = 'red';
+                statusMessageElement.style.display = 'block';
+            } else if (isInitialLoad) { 
+                 gridContainer.innerHTML = '<p style="color:red;">Error loading posts. Check console.</p>';
             }
         } finally {
             isLoadingMore = false;
             initialLoadComplete = true;
-            let loadingIndicator = document.getElementById('loading-indicator');
-            if (loadingIndicator) loadingIndicator.style.display = 'none';
+            if (statusMessageElement && statusMessageElement.textContent === 'Loading more posts...') {
+                 statusMessageElement.textContent = '';
+                 statusMessageElement.style.display = 'none';
+            }
+            applyFilters(); 
         }
     }
 
-    // Scroll event listener for endless scrolling
-    window.addEventListener('scroll', () => {
-        // Only trigger if initial load is done and not currently loading
-        if (!initialLoadComplete || isLoadingMore) return;
+    function applyFilters() {
+        const cards = gridContainer.querySelectorAll('.post-card');
+        cards.forEach(card => {
+            let showCard = true; 
 
-        if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 500) { // 500px threshold
-            console.log("Reached bottom, loading more posts...");
+            if (zapFilterActive && card.dataset.hasZaps !== 'true') {
+                showCard = false;
+            }
+
+            // Bitcoin filter logic
+            if (bitcoinFilterActive && card.dataset.isBitcoin !== 'true') {
+                showCard = false;
+            }
+            
+            card.style.display = showCard ? '' : 'none'; 
+        });
+    }
+    
+    if (zapFilterCheckbox) {
+        zapFilterCheckbox.addEventListener('change', (event) => {
+            zapFilterActive = event.target.checked;
+            applyFilters();
+        });
+    }
+
+    if (bitcoinFilterToggle) { // Add event listener for Bitcoin filter
+        bitcoinFilterToggle.addEventListener('change', (event) => {
+            bitcoinFilterActive = event.target.checked;
+            applyFilters();
+        });
+    }
+
+    window.addEventListener('scroll', () => {
+        if (!initialLoadComplete || isLoadingMore) return;
+        if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 500) {
             loadMorePosts(false);
         }
     });

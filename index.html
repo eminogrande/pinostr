@@ -11,6 +11,27 @@
     <header>
         <h1>Nostr Photo Grid</h1>
     </header>
+    <div class="filter-bar">
+        <div class="filter-group">
+            <label for="zap-filter">
+                <input type="checkbox" id="zap-filter" name="zap-filter">
+                Show posts with min. 1 sat zap
+            </label>
+        </div>
+        <div class="filter-group">
+            <label for="bitcoin-filter-toggle"> <!-- Placeholder for Bitcoin filter -->
+                <input type="checkbox" id="bitcoin-filter-toggle" name="bitcoin-filter-toggle">
+                Bitcoin-only posts
+            </label>
+            <!-- Or an input field:
+            <input type="text" id="bitcoin-filter-input" placeholder="Search #bitcoin posts...">
+            <button id="bitcoin-filter-apply">Apply</button>
+            -->
+        </div>
+        <div id="loading-indicator-container" style="text-align: center; flex-grow: 1;">
+            <!-- Status messages like "Loading..." or "No posts..." will appear here or in grid -->
+        </div>
+    </div>
     <main id="photo-grid-container">
         <!-- Photos will be loaded here -->
     </main>
