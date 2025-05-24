@@ -98,10 +98,10 @@ header h1 {
 
 #photo-grid-container {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); /* Slightly larger min card size */
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); /* Adjusted for ~5 columns */
     gap: var(--grid-gap);
     padding: var(--grid-gap);
-    max-width: 1600px; /* Allow wider grid */
+    max-width: 1280px; /* Adjusted for ~5 columns */
     margin: 0 auto;
 }
 
@@ -123,7 +123,7 @@ header h1 {
 .post-card .main-image-container {
     position: relative;
     width: 100%;
-    padding-bottom: 56.25%; /* 16:9 aspect ratio */
+    padding-bottom: 177.78%; /* 9:16 aspect ratio */
     overflow: hidden;
     background-color: #e9ecef; /* Slightly darker placeholder bg */
     border-top-left-radius: var(--border-radius); /* Match card radius */

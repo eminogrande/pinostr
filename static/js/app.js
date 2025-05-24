@@ -1,7 +1,7 @@
 document.addEventListener('DOMContentLoaded', async () => {
     const gridContainer = document.getElementById('photo-grid-container');
     const zapFilterCheckbox = document.getElementById('zap-filter');
-    const bitcoinFilterToggle = document.getElementById('bitcoin-filter-toggle'); // Get Bitcoin filter toggle
+    const bitcoinFilterToggle = document.getElementById('bitcoin-filter-toggle');
 
     if (!gridContainer) {
         console.error('Grid container not found!');
@@ -38,8 +38,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     let zapFilterActive = false; 
     const MIN_ZAP_AMOUNT_SATS = 1; 
-
-    let bitcoinFilterActive = false; // Bitcoin filter state
+    let bitcoinFilterActive = false;
 
     function isValidImageUrl(url) {
         if (!url || typeof url !== 'string') return false;
@@ -68,16 +67,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function checkZapAmountsForNote(noteId, zapEventsForNote, minAmountMillisats) {
-        if (!zapEventsForNote || zapEventsForNote.length === 0) {
-            return false;
-        }
+        if (!zapEventsForNote || zapEventsForNote.length === 0) return false;
         for (const zapEvent of zapEventsForNote) {
             const amountTag = zapEvent.tags.find(tag => tag[0] === 'amount');
             if (amountTag && amountTag[1]) {
                 const amountMillisats = parseInt(amountTag[1], 10);
-                if (!isNaN(amountMillisats) && amountMillisats >= minAmountMillisats) {
-                    return true; 
-                }
+                if (!isNaN(amountMillisats) && amountMillisats >= minAmountMillisats) return true;
             }
         }
         return false; 
@@ -86,12 +81,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     function createPostCard(post) { 
         const card = document.createElement('div');
         card.className = 'post-card';
-        if (post.hasMinimumZap) {
-            card.dataset.hasZaps = 'true';
-        }
-        if (post.isBitcoinPost) { // Ensure this attribute is set
-            card.dataset.isBitcoin = 'true';
-        }
+        if (post.hasMinimumZap) card.dataset.hasZaps = 'true';
+        if (post.isBitcoinPost) card.dataset.isBitcoin = 'true';
 
         const imageLink = document.createElement('a');
         try {
@@ -104,23 +95,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         imageLink.target = '_blank'; 
         imageLink.rel = 'noopener noreferrer';
 
-        const img = document.createElement('img');
-        img.className = 'main-image'; 
-        img.src = post.imageUrl;
-        img.alt = 'Nostr Post Image';
-        img.onerror = () => {
-            img.alt = 'Image failed to load';
+        const imgTag = document.createElement('img'); // Renamed to avoid conflict with 'img' variable name
+        imgTag.className = 'main-image'; 
+        imgTag.src = post.imageUrl;
+        imgTag.alt = 'Nostr Post Image';
+        imgTag.onerror = () => {
+            imgTag.alt = 'Image failed to load';
             card.style.display = 'none'; 
         };
-        imageLink.appendChild(img);
+        imageLink.appendChild(imgTag);
 
         const imageContainer = document.createElement('div');
         imageContainer.className = 'main-image-container';
-        imageContainer.appendChild(imageLink); // imageLink now goes into imageContainer
+        imageContainer.appendChild(imageLink);
 
         const contentDiv = document.createElement('div');
         contentDiv.className = 'content'; 
-
         const textP = document.createElement('p');
         textP.className = 'text-content';
         textP.textContent = post.text.length > 150 ? post.text.substring(0, 147) + '...' : post.text;
@@ -133,33 +123,62 @@ document.addEventListener('DOMContentLoaded', async () => {
         nameSpan.textContent = post.publisherName || (post.publisherNpub ? post.publisherNpub.substring(0, 10) + '...' : 'Anonymous');
         publisherDiv.appendChild(nameSpan);
 
-        card.appendChild(imageContainer); // imageContainer is appended to card
+        card.appendChild(imageContainer); 
         card.appendChild(contentDiv); 
         card.appendChild(publisherDiv); 
-
         return card;
     }
 
     async function fetchMetadata(pubkeysToFetch) {
-        if (pubkeysToFetch.length === 0) return;
-        const newPubkeys = pubkeysToFetch.filter(pk => !metadataCache.has(pk) || metadataCache.get(pk)?.pending);
-        if (newPubkeys.length === 0) return;
+        console.log("fetchMetadata: Called with pubkeys:", pubkeysToFetch);
+        if (pubkeysToFetch.length === 0) {
+            console.log("fetchMetadata: No pubkeys to fetch.");
+            return;
+        }
+        
+        const newPubkeys = pubkeysToFetch.filter(pk => {
+            const cached = metadataCache.get(pk);
+            return !cached || cached.pending || cached.error || cached.notFound; // Re-fetch if error or notFound previously, or still pending
+        });
+
+        if (newPubkeys.length === 0) {
+            console.log("fetchMetadata: No new pubkeys to fetch (all cached or already pending and valid).");
+            return;
+        }
+        console.log("fetchMetadata: Actual new/refetch pubkeys:", newPubkeys);
+
         newPubkeys.forEach(pk => metadataCache.set(pk, { pending: true }));
+        
         try {
             const metadataEvents = await pool.list(relays, [{ kinds: [0], authors: newPubkeys }]);
+            console.log("fetchMetadata: Received metadata events:", metadataEvents.length);
+            
+            const foundPubkeys = new Set();
             metadataEvents.forEach(event => {
                 try {
                     const metadata = JSON.parse(event.content);
                     metadataCache.set(event.pubkey, metadata);
+                    foundPubkeys.add(event.pubkey);
                 } catch (e) {
-                    console.warn("Failed to parse metadata JSON for pubkey " + event.pubkey + ":", event.content, e);
+                    console.warn(`fetchMetadata: Failed to parse metadata JSON for ${event.pubkey}:`, event.content, e);
                     metadataCache.set(event.pubkey, { error: "Failed to parse" });
+                    foundPubkeys.add(event.pubkey); // Still mark as "processed" for this batch
                 }
             });
+
+            // For any pubkeys that were requested but no event was returned
+            newPubkeys.forEach(pk => {
+                if (!foundPubkeys.has(pk)) { // If not found in the events from this fetch
+                    console.log(`fetchMetadata: No metadata event found for ${pk}. Marking as notFound.`);
+                    metadataCache.set(pk, { notFound: true });
+                }
+            });
+
         } catch (error) {
-            console.error("Failed to fetch metadata for new pubkeys:", error);
+            console.error("fetchMetadata: Error fetching metadata for new pubkeys:", newPubkeys, error);
             newPubkeys.forEach(pk => metadataCache.set(pk, { error: "Fetch failed" }));
         }
+        console.log("fetchMetadata: Exiting. Cache state:", metadataCache);
     }
     
     let initialLoadComplete = false;
@@ -167,6 +186,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const statusMessageContainer = document.getElementById('loading-indicator-container');
 
     async function loadMorePosts(isInitialLoad = false) {
+        console.log(`loadMorePosts: Called. isInitialLoad: ${isInitialLoad}, isLoadingMore: ${isLoadingMore}`);
         if (isLoadingMore) return;
         isLoadingMore = true;
         
@@ -193,53 +213,67 @@ document.addEventListener('DOMContentLoaded', async () => {
         const currentOldestTimestamp = oldestTimestamp;
 
         try {
+            console.log("loadMorePosts: Fetching note events (kind 1)...");
             const noteEvents = await pool.list(relays, [{ kinds: [1], limit: limit, until: currentOldestTimestamp }]);
+            console.log('loadMorePosts: Fetched note events:', noteEvents ? noteEvents.length : 'null');
             
-            if (isInitialLoad && noteEvents.length === 0 ) {
+            if (isInitialLoad && (!noteEvents || noteEvents.length === 0) ) {
+                 console.log('loadMorePosts: No note events found on initial load.');
                  if(statusMessageElement) statusMessageElement.textContent = 'No posts found. Try different relays or check back later.';
                  isLoadingMore = false;
                  return; 
             }
             
-            if (statusMessageElement && (noteEvents.length > 0 || !isInitialLoad) ) {
+            if (statusMessageElement && noteEvents && (noteEvents.length > 0 || !isInitialLoad) ) {
                  statusMessageElement.textContent = ''; 
                  statusMessageElement.style.display = 'none'; 
             }
 
             const noteIds = noteEvents.map(event => event.id);
+            console.log('loadMorePosts: Note IDs for zap/metadata fetching:', noteIds);
             let zapEventsMap = new Map(); 
 
             if (noteIds.length > 0) {
+                console.log("loadMorePosts: Fetching zap events (kind 9735)...");
                 const zapReceiptEvents = await pool.list(relays, [{ kinds: [9735], "#e": noteIds }]);
-                zapReceiptEvents.forEach(zapEvent => {
-                    const zappedNoteIdTag = zapEvent.tags.find(tag => tag[0] === 'e' && tag[1] && noteIds.includes(tag[1]));
-                    if (zappedNoteIdTag) {
-                        const zappedNoteId = zappedNoteIdTag[1];
-                        if (!zapEventsMap.has(zappedNoteId)) {
-                            zapEventsMap.set(zappedNoteId, []);
+                console.log('loadMorePosts: Fetched zap events:', zapReceiptEvents ? zapReceiptEvents.length : 'null');
+                if(zapReceiptEvents) {
+                    zapReceiptEvents.forEach(zapEvent => {
+                        const zappedNoteIdTag = zapEvent.tags.find(tag => tag[0] === 'e' && tag[1] && noteIds.includes(tag[1]));
+                        if (zappedNoteIdTag) {
+                            const zappedNoteId = zappedNoteIdTag[1];
+                            if (!zapEventsMap.has(zappedNoteId)) zapEventsMap.set(zappedNoteId, []);
+                            zapEventsMap.get(zappedNoteId).push(zapEvent);
                         }
-                        zapEventsMap.get(zappedNoteId).push(zapEvent);
-                    }
-                });
+                    });
+                }
             }
             
-            const pubkeysToFetch = [...new Set(noteEvents.map(event => event.pubkey).filter(pk => !metadataCache.has(pk) || metadataCache.get(pk)?.pending))];
+            const pubkeysToFetch = [...new Set(noteEvents.map(event => event.pubkey))]; // No longer pre-filtering based on cache here for simplicity in logging fetchMetadata call
+            console.log('loadMorePosts: Calling fetchMetadata for pubkeys:', pubkeysToFetch);
             await fetchMetadata(pubkeysToFetch);
+            console.log('loadMorePosts: fetchMetadata completed.');
+
 
             let postsAddedInBatch = 0;
             let tempOldestInBatch = currentOldestTimestamp;
 
+            console.log('loadMorePosts: Processing ', noteEvents.length, ' note events for card creation...');
             for (const event of noteEvents) {
-                if (allLoadedEvents.has(event.id)) continue;
+                if (allLoadedEvents.has(event.id)) {
+                    console.log('loadMorePosts: Skipping duplicate event:', event.id);
+                    continue;
+                }
 
                 const imageUrl = extractImageUrlFromContent(event.content);
+                console.log('loadMorePosts: Processing event:', event.id, 'Has image:', !!imageUrl);
+
                 if (imageUrl) {
-                    const metadata = metadataCache.get(event.pubkey);
+                    const metadata = metadataCache.get(event.pubkey) || { notFound: true }; // Ensure metadata is an object
                     const publisherNpub = nip19.npubEncode(event.pubkey);
                     const zapsForThisNote = zapEventsMap.get(event.id) || [];
                     const hasMinZap = checkZapAmountsForNote(event.id, zapsForThisNote, MIN_ZAP_AMOUNT_SATS * 1000);
                     
-                    // Bitcoin related check
                     const contentLowerCase = event.content ? event.content.toLowerCase() : "";
                     const tags = event.tags || [];
                     const isBitcoinRelated = contentLowerCase.includes('bitcoin') || 
@@ -253,12 +287,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                         publisherName: metadata?.name || metadata?.display_name || metadata?.username,
                         publisherNpub: publisherNpub,
                         hasMinimumZap: hasMinZap, 
-                        isBitcoinPost: isBitcoinRelated // Store bitcoin status
+                        isBitcoinPost: isBitcoinRelated
                     };
                     
                     const postElement = createPostCard(postData);
                     if (postElement) {
                        gridContainer.appendChild(postElement); 
+                       console.log('loadMorePosts: Appended post card for event:', event.id);
                        postsAddedInBatch++;
                        allLoadedEvents.add(event.id);
                     }
@@ -278,7 +313,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             
         } catch (error) {
-            console.error("Error loading posts:", error);
+            console.error("loadMorePosts: Full error in loadMorePosts:", error);
             if (statusMessageElement) {
                 statusMessageElement.textContent = 'Error loading posts. Check console.';
                 statusMessageElement.style.color = 'red';
@@ -293,26 +328,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                  statusMessageElement.textContent = '';
                  statusMessageElement.style.display = 'none';
             }
+            console.log("loadMorePosts: Calling applyFilters in finally block.");
             applyFilters(); 
         }
     }
 
     function applyFilters() {
+        console.log('applyFilters: Applying filters. Zap active:', zapFilterActive, 'Bitcoin active:', bitcoinFilterActive);
         const cards = gridContainer.querySelectorAll('.post-card');
         cards.forEach(card => {
             let showCard = true; 
-
-            if (zapFilterActive && card.dataset.hasZaps !== 'true') {
-                showCard = false;
-            }
-
-            // Bitcoin filter logic
-            if (bitcoinFilterActive && card.dataset.isBitcoin !== 'true') {
-                showCard = false;
-            }
-            
+            if (zapFilterActive && card.dataset.hasZaps !== 'true') showCard = false;
+            if (bitcoinFilterActive && card.dataset.isBitcoin !== 'true') showCard = false;
             card.style.display = showCard ? '' : 'none'; 
         });
+        console.log('applyFilters: Filtering complete.');
     }
     
     if (zapFilterCheckbox) {
@@ -322,7 +352,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    if (bitcoinFilterToggle) { // Add event listener for Bitcoin filter
+    if (bitcoinFilterToggle) {
         bitcoinFilterToggle.addEventListener('change', (event) => {
             bitcoinFilterActive = event.target.checked;
             applyFilters();
@@ -332,10 +362,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     window.addEventListener('scroll', () => {
         if (!initialLoadComplete || isLoadingMore) return;
         if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 500) {
+            console.log("Window scroll: Reached bottom, calling loadMorePosts(false).");
             loadMorePosts(false);
         }
     });
 
-    // Initial load
+    console.log("DOMContentLoaded: Initializing. Calling loadMorePosts(true).");
     loadMorePosts(true);
 });
