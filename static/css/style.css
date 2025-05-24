@@ -1,0 +1,97 @@
+body {
+    font-family: sans-serif;
+    margin: 0;
+    background-color: #f0f0f0;
+}
+
+header {
+    background-color: #333;
+    color: white;
+    padding: 1em;
+    text-align: center;
+}
+
+#photo-grid-container {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); /* Basic responsive grid */
+    gap: 10px;
+    padding: 10px;
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+.post-card {
+    background-color: white;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+}
+
+.post-card img.main-image {
+    width: 100%;
+    height: 200px; /* Fixed height for uniformity, adjust as needed */
+    object-fit: cover;
+    display: block;
+}
+
+.post-card .content {
+    padding: 10px;
+}
+
+.post-card .publisher-info {
+    display: flex;
+    align-items: center;
+    padding: 8px 10px;
+    border-top: 1px solid #eee;
+}
+
+.post-card .publisher-info img.icon {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    margin-right: 8px;
+    object-fit: cover;
+}
+
+.post-card .publisher-info .name {
+    font-weight: bold;
+    font-size: 0.9em;
+}
+
+.post-card .text-content {
+    font-size: 0.95em;
+    color: #333;
+    margin-bottom: 8px;
+    max-height: 100px; /* Limit height and use overflow if needed */
+    overflow-y: auto; /* Or ellipsis, etc. */
+}
+
+footer {
+    text-align: center;
+    padding: 1em;
+    background-color: #333;
+    color: white;
+    margin-top: 20px;
+}
+
+/* Styling for messages within the grid container */
+#photo-grid-container p {
+    text-align: center;
+    font-size: 1.1em;
+    color: #555;
+    padding: 20px;
+}
+
+#photo-grid-container p[style*="color:red"] { /* Specifically for error messages if inline style is used */
+    color: #d9534f !important; /* Bootstrap danger color */
+    font-weight: bold;
+}
+
+/* Styling for the temporary 'Loading more posts...' indicator */
+#loading-indicator {
+    text-align: center;
+    padding: 15px;
+    font-style: italic;
+    color: #777;
+}
